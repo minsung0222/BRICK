@@ -706,4 +706,223 @@ function powerupCollisionDetection() {
     if (isPaused || isLevelingUp) return;
     for (let i = powerups.length - 1; i >= 0; i--) {
         const p = powerups[i];
-       
+        if (p.y + p.radius >= HEIGHT - PADDLE_HEIGHT - 10 &&
+            p.y - p.radius <= HEIGHT - 10 &&
+            p.x >= paddleX && 
+            p.x <= paddleX + PADDLE_WIDTH) {
+            if (p.type === 'LONG_PADDLE') activateLongPaddle();
+            else if (p.type === 'MULTIBALL' && balls.length > 0) activateMultiball(balls[0]);
+            else if (p.type === 'MEGA_BALL') activateMegaBall();
+            else if (p.type === 'FIRE_BALL') activateFireBall();
+            else if (p.type === 'MAGNETIC') activateMagnetic();
+            powerups.splice(i, 1);
+        }
+        else if (p.y > HEIGHT) {
+            powerups.splice(i, 1);
+        } else {
+            p.y += p.dy;
+        }
+    }
+}
+
+function checkWinCondition() {
+    if (bricksRemaining === 0) {
+        if (descentTimer) {
+            clearTimeout(descentTimer);
+            descentTimer = null;
+        }
+        startLevelUpAnimation();
+    }
+}
+
+function brickCollisionDetection(ball) {
+    for(let c = 0; c < brickColumnCount; c++) {
+        for(let r = 0; r < brickRowCount; r++) {
+            const b = bricks[c][r];
+            if (b.status === 1) {
+                if (ball.x + ball.radius > b.x && 
+                    ball.x - ball.radius < b.x + brickWidth && 
+                    ball.y + ball.radius > b.y && 
+                    ball.y - ball.radius < b.y + brickHeight) {
+                    b.status = 0;
+                    score += 10;
+                    bricksRemaining--;
+                    playSound('crash');
+                    
+                    const brickColor = `hsl(${360 / brickRowCount * r}, 80%, 50%)`;
+                    for (let i = 0; i < 15; i++) {
+                        particles.push(new Particle(b.x + brickWidth / 2, b.y + brickHeight / 2, brickColor));
+                    }
+                    
+                    if (ball.isFire) {
+                        for(let nc = Math.max(0, c - 1); nc <= Math.min(brickColumnCount - 1, c + 1); nc++) {
+                            for(let nr = Math.max(0, r - 1); nr <= Math.min(brickRowCount - 1, r + 1); nr++) {
+                                if (bricks[nc][nr].status === 1 && !(nc === c && nr === r)) {
+                                    bricks[nc][nr].status = 0;
+                                    score += 5;
+                                    bricksRemaining--;
+                                    for (let i = 0; i < 10; i++) {
+                                        particles.push(new Particle(
+                                            bricks[nc][nr].x + brickWidth / 2,
+                                            bricks[nc][nr].y + brickHeight / 2,
+                                            'rgb(255, 100, 0)'
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (!ball.isMega) {
+                        const prevX = ball.x - ball.dx;
+                        const prevY = ball.y - ball.dy;
+                        if (prevX <= b.x || prevX >= b.x + brickWidth) {
+                            ball.dx = -ball.dx;
+                        } else {
+                            ball.dy = -ball.dy;
+                        }
+                    }
+                    
+                    if (Math.random() < POWERUP_PROBABILITY) {
+                        powerups.push(new Powerup(b.x + brickWidth / 2, b.y + brickHeight / 2));
+                    }
+                    
+                    checkWinCondition();
+                    if (!ball.isMega) return;
+                }
+            }
+        }
+    }
+}
+
+function ballWallAndPaddleCollision(ball, ballIndex) {
+    if (!ball.trail) ball.trail = [];
+    ball.trail.push({ x: ball.x, y: ball.y });
+    if (ball.trail.length > 5) ball.trail.shift();
+    
+    if (isMagneticActive) {
+        const paddleCenterX = paddleX + PADDLE_WIDTH / 2;
+        const paddleCenterY = HEIGHT - PADDLE_HEIGHT / 2 - 10;
+        const dx = paddleCenterX - ball.x;
+        const dy = paddleCenterY - ball.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < MAGNETIC_RANGE && ball.y > HEIGHT / 2) {
+            const force = (1 - distance / MAGNETIC_RANGE) * MAGNETIC_FORCE;
+            ball.dx += (dx / distance) * force;
+            ball.dy += (dy / distance) * force;
+        }
+    }
+    
+    if (ball.x + ball.dx > WIDTH - ball.radius) {
+        ball.dx = -Math.abs(ball.dx);
+        ball.x = WIDTH - ball.radius;
+        playSound('ping');
+    } else if (ball.x + ball.dx < ball.radius) {
+        ball.dx = Math.abs(ball.dx);
+        ball.x = ball.radius;
+        playSound('ping');
+    }
+    
+    if (ball.y + ball.dy < ball.radius) {
+        ball.dy = Math.abs(ball.dy);
+        ball.y = ball.radius;
+        playSound('ping');
+    }
+    
+    if (ball.y + ball.radius >= HEIGHT - PADDLE_HEIGHT - 10) {
+        if (ball.x >= paddleX && ball.x <= paddleX + PADDLE_WIDTH && ball.dy > 0) {
+            ball.dy = -Math.abs(ball.dy);
+            ball.y = HEIGHT - PADDLE_HEIGHT - 10 - ball.radius;
+            playSound('crash');
+            const relativeIntersectX = (ball.x - (paddleX + PADDLE_WIDTH / 2));
+            const normalizedIntersect = relativeIntersectX / (PADDLE_WIDTH / 2);
+            ball.dx += normalizedIntersect * 2;
+        } 
+        else if (ball.y > HEIGHT) {
+            balls.splice(ballIndex, 1);
+            handleBallLoss();
+        }
+    }
+}
+
+function handleBallLoss() {
+    if (balls.length === 0) {
+        lives--;
+        if (lives <= 0) {
+            if (descentTimer) {
+                clearTimeout(descentTimer);
+                descentTimer = null;
+            }
+            stopBGM();
+            playSound('gameOver');
+            setTimeout(() => {
+                if (confirm(`게임 오버!\n최종 점수: ${score}\n\n다시 시작하시겠습니까?`)) {
+                    document.location.reload();
+                }
+            }, 100);
+        } else {
+            const config = LEVEL_CONFIGS[level];
+            const speed = BALL_SPEED_BASE * config.speed_ratio;
+            balls.push({
+                x: WIDTH / 2,
+                y: HEIGHT - 100,
+                dx: speed,
+                dy: -speed,
+                radius: 8,
+                color: "#FFDD00",
+                isMega: false,
+                isFire: false,
+                trail: []
+            });
+            paddleX = (WIDTH - PADDLE_WIDTH) / 2;
+        }
+    }
+}
+
+// 메인 게임 루프
+let lastTime = Date.now();
+
+function draw() {
+    const currentTime = Date.now();
+    const deltaTime = currentTime - lastTime;
+    lastTime = currentTime;
+    
+    drawBackground();
+    drawTopUI();
+    drawBricks();
+    drawPaddle();
+    drawPowerups();
+    drawParticles();
+    updatePowerupTimers(deltaTime);
+    
+    if (isLevelingUp) {
+        updateLevelUpAnimation(deltaTime);
+        drawLevelUpAnimation();
+    }
+    
+    if (!isPaused && !isLevelingUp) {
+        for (let i = balls.length - 1; i >= 0; i--) {
+            let ball = balls[i];
+            drawBall(ball);
+            brickCollisionDetection(ball);
+            ballWallAndPaddleCollision(ball, i);
+            ball.x += ball.dx;
+            ball.y += ball.dy;
+        }
+        powerupCollisionDetection();
+    } else {
+        for (let ball of balls) {
+            drawBall(ball);
+        }
+    }
+    
+    requestAnimationFrame(draw);
+}
+
+// 게임 시작
+resetGame(1);
+descentTimer = setTimeout(descentBricks, descentInterval);
+draw();
+
+console.log("🎮 라라네 벽돌깨기 시작!");
+console.log("🎵 첫 터치 시 BGM01 → BGM02 순환 재생");
